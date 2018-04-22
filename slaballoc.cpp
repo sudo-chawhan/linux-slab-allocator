@@ -1,4 +1,5 @@
 #include <bits/stdc++.h>
+#include <bits/stdc++.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -10,139 +11,176 @@
 #include <sys/mman.h>
 #include <sys/shm.h>
 #include <sys/wait.h>
+
 using namespace std;
-#define slabSize 32
 
-struct bucket
-{
-    int objectSize;
-    struct slab* firstSlab;
+# define SZ 64000
+
+# define SHEADER 500
+
+struct header {
+	int totobj;
+	int freeobj;
+	bitset<16000> bitmap;
+	struct bucket* buck;
+	struct slab* nxtSlab;
 };
 
-struct bucket buckets[11];
-
-struct object
-{
-    struct slab* slabptr;
-    int data;
+struct object{
+	struct slab* slbPtr;
+	int data;
 };
 
-struct slab
-{
-    int totalObj;
-    int freeObj;
-    bitset <16000> bitmap;
-    struct bucket* bucketPtr;
-    struct slab* nextSlab;
-    void* offset;
+struct slab {
+	struct header slabHeader;
 };
 
+struct bucket {
+	int objSize;
+	struct slab* firstSlab;
+};
 
-struct slab* slabCreator(unsigned size)
-{
-    int fd;
-    int SZ = size;
-    if ((fd = open("./1mfile", O_RDWR)) < 0) {
+bucket bcktTable[11];
+
+void addSlab(struct slab* ptr, int bucketSize) {
+	int fd;
+	if ((fd = open("./1mfile", O_RDWR)) < 0) {
         perror("open");
         exit(1);
     }
-    void* ptr1;
-    if ((ptr1 = mmap(NULL, SZ, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
-        perror("mmap");
-        exit(1);
-    }
-
-    void* ptrTraverse = ptr1;
-    struct slab* ptr = (struct slab*)ptr1;
-
-    int sizeheader = sizeof(ptr->totalObj) + sizeof(ptr->freeObj) + sizeof(ptr->bitmap) + sizeof(ptr->bucketPtr) + sizeof(ptr->nextSlab) 
-                        + sizeof(ptr->offset);
-
-    cout << "The header" << sizeheader << endl;
-
-    ptr -> totalObj = ((4096-sizeheader)/(8+size));
-
-    ptrTraverse += sizeof(ptr->totalObj);
-    ptr -> freeObj = ptr -> totalObj;
-    ptrTraverse += sizeof(ptr->freeObj);
-
-    for(int i = 0; i < ptr -> totalObj; i++)
-        ptr -> bitmap[i] = 0;
-
-    ptrTraverse += sizeof(ptr->bitmap);
-    ptrTraverse += sizeof(ptr->bucketPtr);
-    ptrTraverse += sizeof(ptr->nextSlab) + sizeof(ptr->offset);
-
-    ptr -> nextSlab = NULL;
-
-    ptr-> offset = ptrTraverse;
-
-    return ptr;
+	if ((ptr = mmap(NULL, SZ, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+		cout << "Memory can't be allocated." << endl;
+		exit(1);
+	}
+	int objSize = (bucketSize + sizeof(struct slab*));
+	int index = log2(bucketSize) - 2;
+	ptr->buck = &bcktTable[index];
+	ptr->slabHeader.totobj = (SZ - SHEADER) / objSize;
+	// intially all objects are free
+	ptr->slabHeader.freeobj = (SZ - SHEADER) / objSize;
+	ptr->slabHeader.nxtSlab = NULL;
 }
 
-void* mymalloc(unsigned size)
-{
-    int index = log2(size) - 2;
-    int check = 1;
-    if(buckets[index].firstSlab == NULL)
-    {
-        buckets[index].firstSlab = slabCreator(size);
-    }
-    struct slab* current = buckets[index].firstSlab;
-    do
-    {
-        int i = 0;
-        void* allocationPoint;
-        while(current -> bitmap[i] == 1)
-            i++;
-        cout << "postion" << i << endl;
-        cout << "current" << current -> totalObj - 1 << endl;
-        if(i == current -> totalObj)
-        {
-            if(current -> nextSlab == NULL)
-            {
-                current -> nextSlab = slabCreator(size);
-            }
-                current = current -> nextSlab;
-        }
-        else
-        {
-            current -> bitmap[i] = 1;
-            current -> freeObj--;
-            check = 0;
-            allocationPoint = current->offset + i * (sizeof(struct slab*)+size);
-            struct object newObj;
-            newObj.data = i;
-            newObj.slabptr = current;
-            cout << " i = " << i << endl;
-            void* temp = allocationPoint;
-            
-            cout << temp << endl;
-            sprintf((char*)temp, "%d", i);
-            cout << "hi"<< endl;
-            //current -> objects[i].data = i;
-            return (temp);
-        }
+void* mymalloc(int size){
+	// add slab *
+	// find the bucket to put
+	// check the first slab for free objects
+		// update the bitmap and
+		// then return the address of the first free object available
+	// else go to the next slab
+	// if no slab has free objects then create a new slab and then return the free space
+	// and update the bitmap
+	int index;
+	for(int i=0; i<11; i++) {
+		if(bcktTable[i].objSize > size) {
+			index = i;
+			break;
+		}
+	}
+	if(bcktTable[i].firstSlab == NULL) {
+		// Add a slab to the beggining
+		addSlab(bcktTable[i].firstSlab, bcktTable[i].objSize);
+		bcktTable[i].firstSlab->slabHeader.bitmap[0] = 1;
+		bcktTable[i].firstSlab->slabHeader.freeobj--;
+		void*  ret_mem= (void *)bcktTable[i].firstSlab->slabHeader.nxtSlab + SHEADER ;
+		struct object* alloca_mem = (struct object*) ret_mem;
+		alloca_mem->data = i;
+		alloca_mem->slbPtr = bcktTable[i].firstSlab;
 
-    }while(check == 1);
+		return  ret_mem + sizeof(struct slab*);
+
+	} else {
+		struct slab* traverse = bcktTable[i].firstSlab;
+		while(traverse->slabHeader.nxtSlab && traverse->slabHeader.freeobj == 0) {
+			 traverse = traverse->slabHeader.nxtSlab;
+		}
+		if(!traverse->slabHeader.nxtSlab) {
+			// check if any free objects are available
+			if(traverse->slabHeader.freeobj) {
+				// return the required address using bitmap
+				int idx;
+				for(int i=0; i<traverse->slabHeader.totobj; i++) {
+					if(traverse->slabHeader.bitmap[i] == 0) {
+						idx = i;
+						break;
+					}
+				}
+				traverse->slabHeader.bitmap[idx] = 1;
+				traverse->slabHeader.freeobj--;
+				void* ret_mem = (void *)traverse->slabHeader + SHEADER + idx * (bcktTable[i].objSize + sizeof(struct slab*)) ;
+				struct object* alloca_mem = (struct object*) ret_mem;
+				alloca_mem->data = i;
+				alloca_mem->slbPtr = traverse;
+
+				return ret_mem + sizeof(struct slab*);
+
+			} else {
+				// Add a new slab at the end of the slab list
+				addSlab(traverse->slabHeader.nxtSlab, bcktTable[i].objSize);
+				traverse->slabHeader.bitmap[0] = 1;
+				traverse->slabHeader.freeobj--;
+				void* ret_mem = (void *)traverse->slabHeader.nxtSlab + SHEADER ;
+				struct object* alloca_mem = (struct object*) ret_mem;
+				alloca_mem->data = i;
+				alloca_mem->slbPtr = traverse;
+
+				return ret_mem + sizeof(struct slab*);
+			}
+		} else {
+			// return the required address from the slab
+			int idx;
+			for(int i=0; i<traverse->slabHeader.totobj; i++) {
+				if(traverse->slabHeader.bitmap[i] == 0) {
+					idx = i;
+					break;
+				}
+			}
+			traverse->slabHeader.bitmap[idx] = 1;
+			traverse->slabHeader.freeobj--;
+			void* ret_mem = (void *)traverse->slabHeader + SHEADER + idx * (bcktTable[i].objSize + sizeof(struct slab*)) ;
+			alloca_mem->data = i;
+			alloca_mem->slbPtr = traverse;
+
+			return ret_mem + sizeof(struct slab*);
+		}
+	}
 }
-int main()
-{
 
+void myfree(void *ptr){
+	// struct slab* hdr = (struct slab*)ptr - 1;
+	// // how to find the index
+	// hdr->slabHeader.bitmap;
 
-    for(int i = 0; i < 11; i++)
-    {
-        buckets[i].objectSize = pow(2, i + 2);
-        buckets[i].firstSlab = NULL;
-    }
-    while(true)
-    {
-        int size;
-        cin >> size;
-        printf("%s hey",(char*)mymalloc(size));
-        //struct object* ptr = (struct object*)mymalloc(size);
-        //printf("%s   ", (char*)mymalloc(size));
-        //cout << ptr -> data;
-    }
-    return 0;
+	//go to the ptr and use the slab* to go to the slab and update the bitmap
+	// increment freeobj
+	// if freeobj=totobj, free the slab
+		// free using munmap(pointer to header,SZ) 
+
+}
+
+int main() {
+	cout<<sizeof(header);
+	for(int i=0; i<11; i++) {
+		bcktTable[i].objSize = pow(2, i + 2);
+		bcktTable[i].firstSlab = NULL;
+	}
+	int size;		// This is supposed to be given in bytes
+	cin >> size;
+	// void* p = mymalloc(8);
+	// string inputS;
+	// cin >> inputS;
+	// if(sizeof(inputS) <= size) {	
+	// 	// Write to the memory
+	// 	void* mymalloc(size)
+	// } else {
+	// 	cout << "Input size inconsistent." << endl;
+	// 	exit(1);
+	// }
+	void* toAllot = mymalloc(4);
+	printf("%d\n",(int*) toAllot );
+
+	// printf("%s\n",(char*)p);
+	return 0;
+
+	// sprintf() inputS on the memory location
 }
